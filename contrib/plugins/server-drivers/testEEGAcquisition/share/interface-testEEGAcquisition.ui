@@ -59,6 +59,9 @@
         <col id="0" translatable="yes">256</col>
       </row>
       <row>
+        <col id="0" translatable="yes">500</col>
+      </row>
+      <row>
         <col id="0" translatable="yes">512</col>
       </row>
       <row>

@@ -11,8 +11,11 @@ using namespace OpenViBE;
 using namespace OpenViBE::Kernel;
 using namespace std;
 
-#define WRITE_SIZE 1
+#define WRITE_SIZE 4
 #define READ_SIZE 50
+#define MARKER_1 0x01
+#define MARKER_2 0x02
+#define MARKER_3 0x03
 
 float32* dataBuffer;
 HANDLE hSerialMicro;
@@ -29,8 +32,8 @@ CDrivertestEEGAcquisition::CDrivertestEEGAcquisition(IDriverContext& rDriverCont
 	,m_pSample(NULL)
 	,m_ui32ComPort(1)
 {
-	m_oHeader.setSamplingFrequency(128);
-	m_oHeader.setChannelCount(32);
+	m_oHeader.setSamplingFrequency(500);
+	m_oHeader.setChannelCount(8);
 	
 	// The following class allows saving and loading driver settings from the acquisition server .conf file
 	m_oSettings.add("Header", &m_oHeader);
@@ -40,22 +43,17 @@ CDrivertestEEGAcquisition::CDrivertestEEGAcquisition(IDriverContext& rDriverCont
 	m_oSettings.load();	
 }
 
-CDrivertestEEGAcquisition::~CDrivertestEEGAcquisition(void)
-{
+CDrivertestEEGAcquisition::~CDrivertestEEGAcquisition(void){
 }
 
-const char* CDrivertestEEGAcquisition::getName(void)
-{
+const char* CDrivertestEEGAcquisition::getName(void){
 	return "Test EEG Acquisition";
 }
 
 //___________________________________________________________________//
 //                                                                   //
 
-boolean CDrivertestEEGAcquisition::initialize(
-	const uint32 ui32SampleCountPerSentBlock,
-	IDriverCallback& rCallback)
-{
+boolean CDrivertestEEGAcquisition::initialize(const uint32 ui32SampleCountPerSentBlock,	IDriverCallback& rCallback){
 	if(m_rDriverContext.isConnected()) return false;
 	if(!m_oHeader.isChannelCountSet()||!m_oHeader.isSamplingFrequencySet()) return false;
 	
@@ -77,7 +75,7 @@ boolean CDrivertestEEGAcquisition::initialize(
 	// from it
 	// Using for example the connection ID provided by the configuration (m_ui32ConnectionID)
 	// ...
-	
+		
 	char com[10];
 	sprintf(com, "COM%d", m_ui32ComPort);
 
@@ -90,8 +88,6 @@ boolean CDrivertestEEGAcquisition::initialize(
 							OPEN_EXISTING,
 							FILE_ATTRIBUTE_NORMAL,
 							0);
-
-	m_rDriverContext.getLogManager() << LogLevel_Info << "Successfully Opened Port at COM: " << m_ui32ComPort << "\n";
 						
 	if (hSerialMicro==INVALID_HANDLE_VALUE) {
 		if(GetLastError()==ERROR_FILE_NOT_FOUND) {
@@ -102,6 +98,8 @@ boolean CDrivertestEEGAcquisition::initialize(
 		return false;
 	}
 	
+	m_rDriverContext.getLogManager() << LogLevel_Info << "Successfully Opened Port at COM: " << m_ui32ComPort << "\n";
+		
 	DCB dcbSerialParams = {0};
 		
 	if (!GetCommState(hSerialMicro, &dcbSerialParams)) {
@@ -109,7 +107,7 @@ boolean CDrivertestEEGAcquisition::initialize(
 				return false;
 	}
 	
-	dcbSerialParams.BaudRate = CBR_19200;
+	dcbSerialParams.BaudRate = 512000;
 	dcbSerialParams.ByteSize = 8;
 	dcbSerialParams.StopBits = ONESTOPBIT;
 	dcbSerialParams.Parity = NOPARITY;
@@ -138,8 +136,7 @@ boolean CDrivertestEEGAcquisition::initialize(
 	return true;
 }
 
-boolean CDrivertestEEGAcquisition::start(void)
-{
+boolean CDrivertestEEGAcquisition::start(void){
 	if(!m_rDriverContext.isConnected()) return false;
 	if(m_rDriverContext.isStarted()) return false;
 
@@ -148,8 +145,7 @@ boolean CDrivertestEEGAcquisition::start(void)
 	// sending data
 	// ...
 	
-	//TODO: write start bit
-	char bufferToWrite[WRITE_SIZE+1] ={0};
+	char bufferToWrite[WRITE_SIZE+1] ={1,2,0x10,3};
 	DWORD bytesWritten=0;
 	
 	if(!WriteFile(hSerialMicro, bufferToWrite, WRITE_SIZE, &bytesWritten, NULL)){
@@ -160,8 +156,7 @@ boolean CDrivertestEEGAcquisition::start(void)
 	return true;
 }
 
-boolean CDrivertestEEGAcquisition::loop(void)
-{
+boolean CDrivertestEEGAcquisition::loop(void){
 	if(!m_rDriverContext.isConnected()) return false;
 	if(!m_rDriverContext.isStarted()) return true;
 
@@ -172,12 +167,74 @@ boolean CDrivertestEEGAcquisition::loop(void)
 	// put them the correct way in the sample array
 	// whether the buffer is full, send it to the acquisition server
 	//...
-	char bufferToRead[READ_SIZE+1] ={0};
+	
+char bufferToRead[READ_SIZE+1] ={0};
 	DWORD dwBytesRead=0;
 	
-	if(!ReadFile(hSerialMicro, bufferToRead, READ_SIZE, &dwBytesRead, NULL)){
-		m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during loop read\n";
+	//Read the first marker
+	do {
+		if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
+			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during first byte read\n";
+		}
+		if(bufferToRead[0]!=MARKER_1){
+			m_rDriverContext.getLogManager() << LogLevel_Info << "Warning: first marker is incorrect; discarding byte " << (int) bufferToRead[0] << "\n";		
+		} else {
+			m_rDriverContext.getLogManager() << LogLevel_Info << "First marker read\n";				
+		}
+	} while (bufferToRead[0]!=MARKER_1);
+
+	
+	//Read and analyze the header
+	
+	if(!ReadFile(hSerialMicro, bufferToRead, 2, &dwBytesRead, NULL)){
+		m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during header read\n";
 	}
+	
+	unsigned char header1 = bufferToRead[0], header2 = bufferToRead[1];
+	boolean flagRawData = (header1 >> 7) == 1;
+	boolean flagFFTData = ((header1 >> 6) & 1) == 1;
+	
+	//Read the second marker
+	
+	if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
+		m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during fourth byte read\n";
+	}
+	
+	if(bufferToRead[0]!=MARKER_2){
+		m_rDriverContext.getLogManager() << LogLevel_Error << "Error: second marker is incorrect\n";		
+	} else {
+		m_rDriverContext.getLogManager() << LogLevel_Info << "Second marker read\n";				
+	}
+	
+	//Read the data
+	if (flagRawData) {
+		if(!ReadFile(hSerialMicro, bufferToRead, 24, &dwBytesRead, NULL)){
+			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during the raw data read\n";
+		}
+		m_rDriverContext.getLogManager() << LogLevel_Info << "Raw data read successfully\n";
+	}
+		
+	//Read the FFT
+	if (flagFFTData) {
+		if(!ReadFile(hSerialMicro, bufferToRead, 20, &dwBytesRead, NULL)){
+			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during FFT read\n";
+		}
+		m_rDriverContext.getLogManager() << LogLevel_Info << "FFT data read successfully\n";
+	} else {
+		
+	}
+	
+	//Read the last marker
+	
+	if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
+		m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during last byte read\n";
+	}
+	
+	if(bufferToRead[0]!=MARKER_3){
+		m_rDriverContext.getLogManager() << LogLevel_Error << "Error: third marker is incorrect; byte received: " << (int) bufferToRead[0] << "\n";		
+	} else {
+		m_rDriverContext.getLogManager() << LogLevel_Info << "Third marker read\n";				
+	}	
 
 	m_pCallback->setSamples(m_pSample);
 	
@@ -195,8 +252,7 @@ boolean CDrivertestEEGAcquisition::loop(void)
 	return true;
 }
 
-boolean CDrivertestEEGAcquisition::stop(void)
-{
+boolean CDrivertestEEGAcquisition::stop(void){
 	if(!m_rDriverContext.isConnected()) return false;
 	if(!m_rDriverContext.isStarted()) return false;
 
@@ -204,7 +260,7 @@ boolean CDrivertestEEGAcquisition::stop(void)
 	// request the hardware to stop
 	// sending data
 	// ...
-	char bufferToWrite[WRITE_SIZE+1] ={0};
+	char bufferToWrite[WRITE_SIZE+1] ={1,2,0x20,3};
 	DWORD bytesWritten=0;
 	
 	if(!WriteFile(hSerialMicro, bufferToWrite, WRITE_SIZE, &bytesWritten, NULL)){
@@ -215,8 +271,7 @@ boolean CDrivertestEEGAcquisition::stop(void)
 	return true;
 }
 
-boolean CDrivertestEEGAcquisition::uninitialize(void)
-{
+boolean CDrivertestEEGAcquisition::uninitialize(void){
 	if(!m_rDriverContext.isConnected()) return false;
 	if(m_rDriverContext.isStarted()) return false;
 
@@ -234,13 +289,11 @@ boolean CDrivertestEEGAcquisition::uninitialize(void)
 
 //___________________________________________________________________//
 //                                                                   //
-boolean CDrivertestEEGAcquisition::isConfigurable(void)
-{
+boolean CDrivertestEEGAcquisition::isConfigurable(void){
 	return true; // change to false if your device is not configurable
 }
 
-boolean CDrivertestEEGAcquisition::configure(void)
-{
+boolean CDrivertestEEGAcquisition::configure(void){
 	// Change this line if you need to specify some references to your driver attribute that need configuration, e.g. the connection ID.
 	CConfigurationtestEEGAcquisition m_oConfiguration(m_rDriverContext, OpenViBE::Directories::getDataDir() + "/applications/acquisition-server/interface-testEEGAcquisition.ui", m_ui32ComPort);
 	
