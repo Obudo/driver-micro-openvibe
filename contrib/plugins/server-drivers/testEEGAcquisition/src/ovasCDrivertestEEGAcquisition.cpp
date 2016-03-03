@@ -19,10 +19,7 @@ using namespace std;
 
 float32* dataBuffer;
 HANDLE hSerialMicro;
-COMMTIMEOUTS timeoutsMicro={0};
-
-//___________________________________________________________________//
-//                                                                   //
+COMMTIMEOUTS timeoutsMicro={0};  
 
 CDrivertestEEGAcquisition::CDrivertestEEGAcquisition(IDriverContext& rDriverContext)
 	:IDriver(rDriverContext)
@@ -48,10 +45,7 @@ CDrivertestEEGAcquisition::~CDrivertestEEGAcquisition(void){
 
 const char* CDrivertestEEGAcquisition::getName(void){
 	return "Test EEG Acquisition";
-}
-
-//___________________________________________________________________//
-//                                                                   //
+}                                                                  //
 
 boolean CDrivertestEEGAcquisition::initialize(const uint32 ui32SampleCountPerSentBlock,	IDriverCallback& rCallback){
 	if(m_rDriverContext.isConnected()) return false;
@@ -119,11 +113,11 @@ boolean CDrivertestEEGAcquisition::initialize(const uint32 ui32SampleCountPerSen
 	
 	//SET TIMEOUTS
 		
-	timeoutsMicro.ReadIntervalTimeout=50; //Intervallo tra un char e il successivo, prima di un return
-	timeoutsMicro.ReadTotalTimeoutConstant=50; //Intervallo totale prima di un return
-	timeoutsMicro.ReadTotalTimeoutMultiplier=10; //Intervallo tra un byte e il successivo
-	timeoutsMicro.WriteTotalTimeoutConstant=50;
-	timeoutsMicro.WriteTotalTimeoutMultiplier=10;
+	timeoutsMicro.ReadIntervalTimeout=100; //Intervallo tra un char e il successivo, prima di un return
+	timeoutsMicro.ReadTotalTimeoutConstant=100; //Intervallo totale prima di un return
+	timeoutsMicro.ReadTotalTimeoutMultiplier=20; //Intervallo tra un byte e il successivo
+	timeoutsMicro.WriteTotalTimeoutConstant=100;
+	timeoutsMicro.WriteTotalTimeoutMultiplier=20;
 	
 	if(!SetCommTimeouts(hSerialMicro, &timeoutsMicro)){
 		m_rDriverContext.getLogManager() << LogLevel_Error << "Error setting timeouts\n";
@@ -168,73 +162,90 @@ boolean CDrivertestEEGAcquisition::loop(void){
 	// whether the buffer is full, send it to the acquisition server
 	//...
 	
-char bufferToRead[READ_SIZE+1] ={0};
+	unsigned __int8 bufferToRead[READ_SIZE+1] ={0};
 	DWORD dwBytesRead=0;
 	
-	//Read the first marker
-	do {
-		if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
-			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during first byte read\n";
-		}
-		if(bufferToRead[0]!=MARKER_1){
-			m_rDriverContext.getLogManager() << LogLevel_Info << "Warning: first marker is incorrect; discarding byte " << (int) bufferToRead[0] << "\n";		
-		} else {
-			m_rDriverContext.getLogManager() << LogLevel_Info << "First marker read\n";				
-		}
-	} while (bufferToRead[0]!=MARKER_1);
+	for (uint32 bufferPhaseCount=0; bufferPhaseCount<m_ui32SampleCountPerSentBlock; bufferPhaseCount++) {
+		
+		//Read the first marker
+		do {
+			if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
+				m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during first byte read\n";
+			}
+			if(bufferToRead[0]!=MARKER_1){
+				m_rDriverContext.getLogManager() << LogLevel_Info << "Warning: first marker is incorrect; discarding byte " << (int) bufferToRead[0] << "\n";		
+			} else {
+				m_rDriverContext.getLogManager() << LogLevel_Info << "First marker read\n";				
+			}
+		} while (bufferToRead[0]!=MARKER_1);
 
-	
-	//Read and analyze the header
-	
-	if(!ReadFile(hSerialMicro, bufferToRead, 2, &dwBytesRead, NULL)){
-		m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during header read\n";
-	}
-	
-	unsigned char header1 = bufferToRead[0], header2 = bufferToRead[1];
-	boolean flagRawData = (header1 >> 7) == 1;
-	boolean flagFFTData = ((header1 >> 6) & 1) == 1;
-	
-	//Read the second marker
-	
-	if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
-		m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during fourth byte read\n";
-	}
-	
-	if(bufferToRead[0]!=MARKER_2){
-		m_rDriverContext.getLogManager() << LogLevel_Error << "Error: second marker is incorrect\n";		
-	} else {
-		m_rDriverContext.getLogManager() << LogLevel_Info << "Second marker read\n";				
-	}
-	
-	//Read the data
-	if (flagRawData) {
-		if(!ReadFile(hSerialMicro, bufferToRead, 24, &dwBytesRead, NULL)){
-			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during the raw data read\n";
-		}
-		m_rDriverContext.getLogManager() << LogLevel_Info << "Raw data read successfully\n";
-	}
 		
-	//Read the FFT
-	if (flagFFTData) {
-		if(!ReadFile(hSerialMicro, bufferToRead, 20, &dwBytesRead, NULL)){
-			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during FFT read\n";
-		}
-		m_rDriverContext.getLogManager() << LogLevel_Info << "FFT data read successfully\n";
-	} else {
+		//Read and analyze the header
 		
+		if(!ReadFile(hSerialMicro, bufferToRead, 2, &dwBytesRead, NULL)){
+			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during header read\n";
+		}
+		
+		unsigned __int8 header1 = bufferToRead[0], header2 = bufferToRead[1];
+		boolean flagRawData = (header1 >> 7) == 1;
+		boolean flagFFTData = ((header1 >> 6) & 1) == 1;
+		
+		//Read the second marker
+		
+		if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
+			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during second marker read\n";
+		}
+		
+		if(bufferToRead[0]!=MARKER_2){
+			m_rDriverContext.getLogManager() << LogLevel_Error << "Error: second marker is incorrect\n";		
+		} else {
+			m_rDriverContext.getLogManager() << LogLevel_Info << "Second marker read\n";				
+		}
+		
+		//Read the data
+		if (flagRawData) {
+			if(!ReadFile(hSerialMicro, bufferToRead, 24, &dwBytesRead, NULL)){
+				m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during the raw data read\n";
+			}
+			m_rDriverContext.getLogManager() << LogLevel_Info << "Raw data read successfully; Beginning data elaboration\n";
+			for (uint32 j=0; j<m_oHeader.getChannelCount(); j++){
+				uint32 msb, lsb1, lsb2;
+				msb = bufferToRead[3*j];
+				lsb1 = bufferToRead[3*j+1];
+				lsb2 = bufferToRead[3*j+2];
+
+				int reconstructedValue = (msb << 16) | (lsb1 << 8) | (lsb2);
+				if (( msb>>7 ) == 1) {
+					reconstructedValue = reconstructedValue | 0xff000000;
+				}
+				m_pSample[j*m_ui32SampleCountPerSentBlock+bufferPhaseCount] = reconstructedValue/(10*(2^23-1));
+				}
+			
+		}
+			
+		//Read the FFT
+		if (flagFFTData) {
+			if(!ReadFile(hSerialMicro, bufferToRead, 20, &dwBytesRead, NULL)){
+				m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during FFT read\n";
+			}
+			m_rDriverContext.getLogManager() << LogLevel_Info << "FFT data read successfully\n";
+		} else {
+			
+		}
+		
+		//Read the last marker
+		
+		if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
+			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during last byte read\n";
+		}
+		
+		if(bufferToRead[0]!=MARKER_3){
+			m_rDriverContext.getLogManager() << LogLevel_Error << "Error: third marker is incorrect; byte received: " << (int) bufferToRead[0] << "\n";		
+		} else {
+			m_rDriverContext.getLogManager() << LogLevel_Info << "Third marker read\n";				
+		}
+
 	}
-	
-	//Read the last marker
-	
-	if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
-		m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during last byte read\n";
-	}
-	
-	if(bufferToRead[0]!=MARKER_3){
-		m_rDriverContext.getLogManager() << LogLevel_Error << "Error: third marker is incorrect; byte received: " << (int) bufferToRead[0] << "\n";		
-	} else {
-		m_rDriverContext.getLogManager() << LogLevel_Info << "Third marker read\n";				
-	}	
 
 	m_pCallback->setSamples(m_pSample);
 	
@@ -286,9 +297,7 @@ boolean CDrivertestEEGAcquisition::uninitialize(void){
 
 	return true;
 }
-
-//___________________________________________________________________//
-//                                                                   //
+                                                     //
 boolean CDrivertestEEGAcquisition::isConfigurable(void){
 	return true; // change to false if your device is not configurable
 }
