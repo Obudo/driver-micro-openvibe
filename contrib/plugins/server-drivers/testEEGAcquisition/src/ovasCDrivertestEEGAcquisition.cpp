@@ -18,8 +18,9 @@ using namespace std;
 #define MARKER_3 0x03
 
 float32* dataBuffer;
+uint32 totalSampleCount;
 HANDLE hSerialMicro;
-COMMTIMEOUTS timeoutsMicro={0};  
+COMMTIMEOUTS timeoutsMicro={0};
 
 CDrivertestEEGAcquisition::CDrivertestEEGAcquisition(IDriverContext& rDriverContext)
 	:IDriver(rDriverContext)
@@ -28,6 +29,7 @@ CDrivertestEEGAcquisition::CDrivertestEEGAcquisition(IDriverContext& rDriverCont
 	,m_ui32SampleCountPerSentBlock(0)
 	,m_pSample(NULL)
 	,m_ui32ComPort(1)
+	
 {
 	m_oHeader.setSamplingFrequency(500);
 	m_oHeader.setChannelCount(8);
@@ -48,8 +50,18 @@ const char* CDrivertestEEGAcquisition::getName(void){
 }                                                                  //
 
 boolean CDrivertestEEGAcquisition::initialize(const uint32 ui32SampleCountPerSentBlock,	IDriverCallback& rCallback){
-	if(m_rDriverContext.isConnected()) return false;
-	if(!m_oHeader.isChannelCountSet()||!m_oHeader.isSamplingFrequencySet()) return false;
+	m_rDriverContext.getLogManager() << LogLevel_Trace << "CDriverGenericOscillator::initialize\n";
+	
+	if(m_rDriverContext.isConnected()) { 
+		return false; 
+	}
+	if(!m_oHeader.isChannelCountSet()||!m_oHeader.isSamplingFrequencySet())	{
+		return false;
+	}
+
+	for(uint32 i=0;i<m_oHeader.getChannelCount();i++) {
+		m_oHeader.setChannelUnits(i, OVTK_UNIT_Volts, OVTK_FACTOR_Base);
+	}
 	
 	// Builds up a buffer to store
 	// acquired samples. This buffer
@@ -113,11 +125,11 @@ boolean CDrivertestEEGAcquisition::initialize(const uint32 ui32SampleCountPerSen
 	
 	//SET TIMEOUTS
 		
-	timeoutsMicro.ReadIntervalTimeout=100; //Intervallo tra un char e il successivo, prima di un return
-	timeoutsMicro.ReadTotalTimeoutConstant=100; //Intervallo totale prima di un return
-	timeoutsMicro.ReadTotalTimeoutMultiplier=20; //Intervallo tra un byte e il successivo
-	timeoutsMicro.WriteTotalTimeoutConstant=100;
-	timeoutsMicro.WriteTotalTimeoutMultiplier=20;
+	timeoutsMicro.ReadIntervalTimeout=50; //Intervallo tra un char e il successivo, prima di un return
+	timeoutsMicro.ReadTotalTimeoutConstant=50; //Intervallo totale prima di un return
+	timeoutsMicro.ReadTotalTimeoutMultiplier=10; //Intervallo tra un byte e il successivo
+	timeoutsMicro.WriteTotalTimeoutConstant=50;
+	timeoutsMicro.WriteTotalTimeoutMultiplier=10;
 	
 	if(!SetCommTimeouts(hSerialMicro, &timeoutsMicro)){
 		m_rDriverContext.getLogManager() << LogLevel_Error << "Error setting timeouts\n";
@@ -146,7 +158,10 @@ boolean CDrivertestEEGAcquisition::start(void){
 		m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during hardware start\n";
 		return false;
 	}
-
+	totalSampleCount=0;
+	
+	
+	
 	return true;
 }
 
@@ -163,9 +178,11 @@ boolean CDrivertestEEGAcquisition::loop(void){
 	//...
 	
 	unsigned __int8 bufferToRead[READ_SIZE+1] ={0};
+	unsigned __int8 bufferDataRaw[25] = {0};
 	DWORD dwBytesRead=0;
+	uint32 bufferPhaseCount = 0;
 	
-	for (uint32 bufferPhaseCount=0; bufferPhaseCount<m_ui32SampleCountPerSentBlock; bufferPhaseCount++) {
+	while (bufferPhaseCount<m_ui32SampleCountPerSentBlock) {
 		
 		//Read the first marker
 		do {
@@ -204,23 +221,10 @@ boolean CDrivertestEEGAcquisition::loop(void){
 		
 		//Read the data
 		if (flagRawData) {
-			if(!ReadFile(hSerialMicro, bufferToRead, 24, &dwBytesRead, NULL)){
+			if(!ReadFile(hSerialMicro, bufferDataRaw, 24, &dwBytesRead, NULL)){
 				m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during the raw data read\n";
 			}
-			m_rDriverContext.getLogManager() << LogLevel_Info << "Raw data read successfully; Beginning data elaboration\n";
-			for (uint32 j=0; j<m_oHeader.getChannelCount(); j++){
-				uint32 msb, lsb1, lsb2;
-				msb = bufferToRead[3*j];
-				lsb1 = bufferToRead[3*j+1];
-				lsb2 = bufferToRead[3*j+2];
-
-				int reconstructedValue = (msb << 16) | (lsb1 << 8) | (lsb2);
-				if (( msb>>7 ) == 1) {
-					reconstructedValue = reconstructedValue | 0xff000000;
-				}
-				m_pSample[j*m_ui32SampleCountPerSentBlock+bufferPhaseCount] = reconstructedValue/(10*(2^23-1));
-				}
-			
+			m_rDriverContext.getLogManager() << LogLevel_Info << "Raw data read successfully; Awaiting confirmation of correct acquisition\n";
 		}
 			
 		//Read the FFT
@@ -241,10 +245,13 @@ boolean CDrivertestEEGAcquisition::loop(void){
 		
 		if(bufferToRead[0]!=MARKER_3){
 			m_rDriverContext.getLogManager() << LogLevel_Error << "Error: third marker is incorrect; byte received: " << (int) bufferToRead[0] << "\n";		
+			
 		} else {
-			m_rDriverContext.getLogManager() << LogLevel_Info << "Third marker read\n";				
+			m_rDriverContext.getLogManager() << LogLevel_Info << "Third marker read correctly; saving data\n";
+			saveDataToSampleBuffer(bufferPhaseCount, bufferDataRaw);
+			bufferPhaseCount++;
+			totalSampleCount++;
 		}
-
 	}
 
 	m_pCallback->setSamples(m_pSample);
@@ -279,6 +286,8 @@ boolean CDrivertestEEGAcquisition::stop(void){
 		return false;
 	}
 
+	m_rDriverContext.getLogManager() << LogLevel_Info << "Total sample read per channel: " << totalSampleCount << "\n";
+	
 	return true;
 }
 
@@ -313,4 +322,22 @@ boolean CDrivertestEEGAcquisition::configure(void){
 	m_oSettings.save();
 	
 	return true;
+}
+
+boolean CDrivertestEEGAcquisition::saveDataToSampleBuffer (uint32 phaseCounter, unsigned __int8* dataRaw) {
+	for (uint32 j=0; j<m_oHeader.getChannelCount(); j++){
+		uint32 msb, lsb1, lsb2;
+		msb = dataRaw[3*j];
+		lsb1 = dataRaw[3*j+1];
+		lsb2 = dataRaw[3*j+2];
+
+		int reconstructedValue = (msb << 16) | (lsb1 << 8) | (lsb2);
+		if (( msb>>7 ) == 1) {
+			reconstructedValue = reconstructedValue | 0xff000000;
+		}
+		float32 floatValue = reconstructedValue;
+		m_pSample[j*m_ui32SampleCountPerSentBlock+phaseCounter] = floatValue/83886070; //10*(2^23-1) non funziona
+		m_rDriverContext.getLogManager() << LogLevel_Info << j*m_ui32SampleCountPerSentBlock+phaseCounter << "\n";		
+	}
+	return false;
 }

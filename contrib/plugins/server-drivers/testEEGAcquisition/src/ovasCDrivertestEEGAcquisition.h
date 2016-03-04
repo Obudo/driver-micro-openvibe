@@ -58,7 +58,7 @@ namespace OpenViBEAcquisitionServer
 
 		OpenViBE::uint32 m_ui32SampleCountPerSentBlock;
 		OpenViBE::float32* m_pSample;
-	
+		
 	private:
 
 		/*
@@ -68,6 +68,8 @@ namespace OpenViBEAcquisitionServer
 		// OpenViBE::uint32 m_ui32ConnectionID;
 		
 		OpenViBE::uint32 m_ui32ComPort;
+		OpenViBE::boolean saveDataToSampleBuffer (OpenViBE::uint32 phaseCounter, unsigned __int8* dataRaw);
+
 	};
 };
 
