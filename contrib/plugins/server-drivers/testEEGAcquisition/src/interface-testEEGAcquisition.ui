@@ -53,6 +53,18 @@
     </columns>
     <data>
       <row>
+        <col id="0" translatable="yes">16</col>
+      </row>
+      <row>
+        <col id="0" translatable="yes">32</col>
+      </row>
+      <row>
+        <col id="0" translatable="yes">64</col>
+      </row>
+      <row>
+        <col id="0" translatable="yes">128</col>
+      </row>
+      <row>
         <col id="0" translatable="yes">128</col>
       </row>
       <row>
