@@ -12,13 +12,16 @@ using namespace OpenViBE::Kernel;
 using namespace std;
 
 #define WRITE_SIZE 4
-#define READ_SIZE 50
+#define READ_SIZE 128
+#define RAW_DATA_SIZE 24
 #define MARKER_1 0x01
 #define MARKER_2 0x02
 #define MARKER_3 0x03
+#define DEBUG_MODE 0
 
 float32* dataBuffer;
 uint32 totalSampleCount;
+uint32 discardedSampleCount;
 HANDLE hSerialMicro;
 COMMTIMEOUTS timeoutsMicro={0};
 
@@ -31,7 +34,7 @@ CDrivertestEEGAcquisition::CDrivertestEEGAcquisition(IDriverContext& rDriverCont
 	,m_ui32ComPort(1)
 	
 {
-	m_oHeader.setSamplingFrequency(500);
+	m_oHeader.setSamplingFrequency(250);
 	m_oHeader.setChannelCount(8);
 	
 	// The following class allows saving and loading driver settings from the acquisition server .conf file
@@ -154,13 +157,12 @@ boolean CDrivertestEEGAcquisition::start(void){
 	char bufferToWrite[WRITE_SIZE+1] ={1,2,0x10,3};
 	DWORD bytesWritten=0;
 	
-	if(!WriteFile(hSerialMicro, bufferToWrite, WRITE_SIZE, &bytesWritten, NULL)){
+	if(!WriteFile(hSerialMicro, bufferToWrite, WRITE_SIZE, &bytesWritten, NULL)||(bytesWritten!=WRITE_SIZE)){
 		m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during hardware start\n";
 		return false;
 	}
 	totalSampleCount=0;
-	
-	
+	discardedSampleCount=0;	
 	
 	return true;
 }
@@ -176,82 +178,10 @@ boolean CDrivertestEEGAcquisition::loop(void){
 	// put them the correct way in the sample array
 	// whether the buffer is full, send it to the acquisition server
 	//...
-	
-	unsigned __int8 bufferToRead[READ_SIZE+1] ={0};
-	unsigned __int8 bufferDataRaw[25] = {0};
-	DWORD dwBytesRead=0;
-	uint32 bufferPhaseCount = 0;
-	
-	while (bufferPhaseCount<m_ui32SampleCountPerSentBlock) {
-		
-		//Read the first marker
-		do {
-			if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
-				m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during first byte read\n";
-			}
-			if(bufferToRead[0]!=MARKER_1){
-				m_rDriverContext.getLogManager() << LogLevel_Info << "Warning: first marker is incorrect; discarding byte " << (int) bufferToRead[0] << "\n";		
-			} else {
-				m_rDriverContext.getLogManager() << LogLevel_Info << "First marker read\n";				
-			}
-		} while (bufferToRead[0]!=MARKER_1);
-
-		
-		//Read and analyze the header
-		
-		if(!ReadFile(hSerialMicro, bufferToRead, 2, &dwBytesRead, NULL)){
-			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during header read\n";
-		}
-		
-		unsigned __int8 header1 = bufferToRead[0], header2 = bufferToRead[1];
-		boolean flagRawData = (header1 >> 7) == 1;
-		boolean flagFFTData = ((header1 >> 6) & 1) == 1;
-		
-		//Read the second marker
-		
-		if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
-			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during second marker read\n";
-		}
-		
-		if(bufferToRead[0]!=MARKER_2){
-			m_rDriverContext.getLogManager() << LogLevel_Error << "Error: second marker is incorrect\n";		
-		} else {
-			m_rDriverContext.getLogManager() << LogLevel_Info << "Second marker read\n";				
-		}
-		
-		//Read the data
-		if (flagRawData) {
-			if(!ReadFile(hSerialMicro, bufferDataRaw, 24, &dwBytesRead, NULL)){
-				m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during the raw data read\n";
-			}
-			m_rDriverContext.getLogManager() << LogLevel_Info << "Raw data read successfully; Awaiting confirmation of correct acquisition\n";
-		}
-			
-		//Read the FFT
-		if (flagFFTData) {
-			if(!ReadFile(hSerialMicro, bufferToRead, 20, &dwBytesRead, NULL)){
-				m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during FFT read\n";
-			}
-			m_rDriverContext.getLogManager() << LogLevel_Info << "FFT data read successfully\n";
-		} else {
-			
-		}
-		
-		//Read the last marker
-		
-		if(!ReadFile(hSerialMicro, bufferToRead, 1, &dwBytesRead, NULL)){
-			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during last byte read\n";
-		}
-		
-		if(bufferToRead[0]!=MARKER_3){
-			m_rDriverContext.getLogManager() << LogLevel_Error << "Error: third marker is incorrect; byte received: " << (int) bufferToRead[0] << "\n";		
-			
-		} else {
-			m_rDriverContext.getLogManager() << LogLevel_Info << "Third marker read correctly; saving data\n";
-			saveDataToSampleBuffer(bufferPhaseCount, bufferDataRaw);
-			bufferPhaseCount++;
-			totalSampleCount++;
-		}
+	if (DEBUG_MODE) {
+		debugIncomingArray();
+	} else {
+		statesMachine();		
 	}
 
 	m_pCallback->setSamples(m_pSample);
@@ -287,6 +217,7 @@ boolean CDrivertestEEGAcquisition::stop(void){
 	}
 
 	m_rDriverContext.getLogManager() << LogLevel_Info << "Total sample read per channel: " << totalSampleCount << "\n";
+	m_rDriverContext.getLogManager() << LogLevel_Info << "Total bytes discarded: " << discardedSampleCount << "\n";
 	
 	return true;
 }
@@ -337,7 +268,81 @@ boolean CDrivertestEEGAcquisition::saveDataToSampleBuffer (uint32 phaseCounter, 
 		}
 		float32 floatValue = reconstructedValue;
 		m_pSample[j*m_ui32SampleCountPerSentBlock+phaseCounter] = floatValue/83886070; //10*(2^23-1) non funziona
-		m_rDriverContext.getLogManager() << LogLevel_Info << j*m_ui32SampleCountPerSentBlock+phaseCounter << "\n";		
+		//m_rDriverContext.getLogManager() << LogLevel_Info << j*m_ui32SampleCountPerSentBlock+phaseCounter << "\n";		
 	}
 	return false;
+}
+
+boolean CDrivertestEEGAcquisition::statesMachine() {
+	
+	unsigned __int8 bufferToRead[READ_SIZE+1] ={0};
+	uint32 bufferPhaseCount = 0;
+	while(bufferPhaseCount<m_ui32SampleCountPerSentBlock) {
+	
+		getDataStrict(bufferToRead, 1);
+		if (bufferToRead[0] != MARKER_1) {
+			m_rDriverContext.getLogManager() << LogLevel_Info << "Missed first marker: " << (int) bufferToRead[0] << "\n";
+			discardedSampleCount+=1;
+			continue;
+		}
+		
+		getDataStrict(bufferToRead, 3);
+		if (bufferToRead[2] != MARKER_2) {
+			m_rDriverContext.getLogManager() << LogLevel_Info << "Missed second marker: " << (int) bufferToRead[2] << "\n";
+			discardedSampleCount+=3;
+			continue;
+		}
+		
+		unsigned __int8 header1 = bufferToRead[0], header2 = bufferToRead[1];
+		int flagRawData = header1 >> 7;
+		int flagFFTData = (header1 >> 6) & 1;
+		
+		int dataBytesToRead = flagRawData*RAW_DATA_SIZE + 1;
+		
+		getDataStrict(bufferToRead, dataBytesToRead);
+		if (bufferToRead[dataBytesToRead-1] != MARKER_3) {
+			m_rDriverContext.getLogManager() << LogLevel_Info << "Missed third marker: " << (int) bufferToRead[dataBytesToRead-1] << "\n";
+			discardedSampleCount+=dataBytesToRead;
+			continue;
+		}
+		
+		m_rDriverContext.getLogManager() << LogLevel_Info << "Transmission successful!\n";
+		saveDataToSampleBuffer(bufferPhaseCount, bufferToRead);
+		bufferPhaseCount++;
+		totalSampleCount++;
+	}
+	
+	return false;
+}
+
+boolean CDrivertestEEGAcquisition::debugIncomingArray() {
+	unsigned __int8 bufferToDebug[READ_SIZE] = {0};
+	getDataStrict(bufferToDebug, 29);
+	if (bufferToDebug[0]==MARKER_1&&bufferToDebug[3]==MARKER_2&&bufferToDebug[28]==MARKER_3)
+		m_rDriverContext.getLogManager() << LogLevel_Info << "Acquisition ok!\n";
+	else {
+		for (int i=0; i<29; i++) {
+			m_rDriverContext.getLogManager() << LogLevel_Info << (int) bufferToDebug[i] << " , " << i << "\n";			
+		}
+	}
+	return true;
+}
+
+boolean CDrivertestEEGAcquisition::getDataStrict(unsigned __int8* dataArray, int byteNum) {
+	DWORD bytesIn;
+	int totalBytesRead = 0;
+	if(!ReadFile(hSerialMicro, dataArray, byteNum, &bytesIn, NULL)){
+		m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during read\n";
+		return false;
+	}
+	while ((int) bytesIn != byteNum) {
+		int temp = byteNum - bytesIn;
+		totalBytesRead += bytesIn;
+		if(!ReadFile(hSerialMicro, dataArray + totalBytesRead, byteNum - bytesIn, &bytesIn, NULL)){
+			m_rDriverContext.getLogManager() << LogLevel_Error << "Error occurred during read\n";
+			return false;
+		}
+		byteNum = temp;
+	}
+	return true;
 }

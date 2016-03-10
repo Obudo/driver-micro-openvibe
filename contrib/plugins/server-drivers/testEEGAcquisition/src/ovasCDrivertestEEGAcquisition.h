@@ -69,6 +69,9 @@ namespace OpenViBEAcquisitionServer
 		
 		OpenViBE::uint32 m_ui32ComPort;
 		OpenViBE::boolean saveDataToSampleBuffer (OpenViBE::uint32 phaseCounter, unsigned __int8* dataRaw);
+		OpenViBE::boolean debugIncomingArray();
+		OpenViBE::boolean statesMachine();
+		OpenViBE::boolean getDataStrict(unsigned __int8* dataArray, int byteNum);
 
 	};
 };
